@@ -51,10 +51,15 @@ input:focus,select:focus{outline:2px solid var(--pri);background:var(--bg)}
 details{margin-top:14px}summary{cursor:pointer;color:var(--mut)}
 .empty{text-align:center;color:var(--mut);padding:30px 10px}
 .neg{color:#fecaca;font-weight:700}
+.chat-msg{padding:10px 14px;border-radius:16px;margin-bottom:10px;max-width:85%;font-size:14px;line-height:1.3;word-wrap:break-word}
+.chat-msg.u{background:var(--pri);color:#fff;margin-left:auto;border-bottom-right-radius:4px}
+:root:not([data-theme="light"]) .chat-msg.u{color:#06201c}
+.chat-msg.ai{background:var(--ln);color:var(--tx);margin-right:auto;border-bottom-left-radius:4px}
+.chat-inp-row{display:flex;gap:8px;margin-top:12px;align-items:center}
 </style>
 </head>
 <body>
-<header><div><h1>💰 Mis Pagos</h1><small id="sub"></small></div><button class="ic" data-act="cfg" aria-label="Ajustes">⚙️</button></header>
+<header><div><h1>💰 Mis Pagos</h1><small id="sub"></small></div><div style="display:flex;gap:4px"><button class="ic" data-act="chat" aria-label="Asistente IA">🤖</button><button class="ic" data-act="cfg" aria-label="Ajustes">⚙️</button></div></header>
 <main>
 <section class="card hero" id="hero"></section>
 <div id="list"></div>
@@ -62,12 +67,17 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--mut)}
 </main>
 <button class="fab" data-act="add" aria-label="Agregar pago">+</button>
 <dialog id="dlg"></dialog>
+<dialog id="chatDlg"></dialog>
 <script>
 const $=s=>document.querySelector(s),K='mispagos.v1';
-const DEF={payday:5,income:0,cur:'S/',ovw:2};
+const DEF={payday:5,income:0,cur:'S/',ovw:2,aiKey:''};
 let S={s:{...DEF},o:[],h:[]},arm=null;
 try{const r=localStorage.getItem(K);if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
 S.s=Object.assign({},DEF,S.s);
+
+let undoStack = [];
+const saveState = () => { undoStack.push(JSON.stringify(S)); if(undoStack.length>20) undoStack.shift(); };
+
 const save=()=>{try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}};
 const D=s=>{const[a,b,c]=s.split('-');return new Date(+a,b-1,+c)};
 const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -147,17 +157,156 @@ function cfg(){
  <label>Ingreso semanal (opcional, para ver cuánto te queda libre)</label><input id="ci" type="number" inputmode="decimal" min="0" step="any" value="${s.income||''}">
  <label>Moneda</label><input id="cc" value="${esc(s.cur)}" maxlength="4">
  <label>Semanas para ponerte al día en pagos vencidos (menos semanas = menos mora, más monto semanal)</label><input id="cw" type="number" inputmode="numeric" min="1" max="12" value="${s.ovw}">
+ <label>API Key de OpenAI (Para Asistente IA)</label><input id="ck" type="password" value="${esc(s.aiKey||'')}">
  <div class="acts"><button class="btn" data-act="close">Cancelar</button><button class="btn p" data-act="savecfg">Guardar</button></div>`;
  $('#dlg').showModal();
 }
+
+let chatHistory = [];
+function openChat(){
+ $('#chatDlg').innerHTML=`<div class="t" style="margin-bottom:12px">🤖 Asistente IA</div>
+ <div id="chatMsgs" style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;padding-right:4px"></div>
+ <div class="chat-inp-row">
+  <input id="chatIn" placeholder="Ej: Agrega 5 letras a MIBANCO..." autocomplete="off">
+  <button class="btn p" data-act="sendChat">Enviar</button>
+ </div>
+ <div class="acts" style="margin-top:12px"><button class="btn" data-act="closeChat">Cerrar</button></div>`;
+ $('#chatDlg').showModal();
+ const msgs = $('#chatMsgs');
+ if(chatHistory.length === 0) chatHistory.push({r:'ai', t:'¡Hola! Soy tu asistente. Dime qué pagos quieres agregar, editar o si quieres deshacer algo.'});
+ msgs.innerHTML = chatHistory.map(m => `<div class="chat-msg ${m.r}">${esc(m.t)}</div>`).join('');
+ msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function sendChat(){
+ const inp = $('#chatIn');
+ const text = inp.value.trim();
+ if(!text) return;
+ inp.value = '';
+ 
+ const msgs = $('#chatMsgs');
+ const addMsg = (r, t) => {
+   chatHistory.push({r, t});
+   msgs.insertAdjacentHTML('beforeend', `<div class="chat-msg ${r}">${esc(t)}</div>`);
+   msgs.scrollTop = msgs.scrollHeight;
+ };
+ 
+ addMsg('u', text);
+ 
+ if(!S.s.aiKey) {
+   addMsg('ai', 'Por favor, configura tu API Key de OpenAI en los Ajustes (⚙️) para usar el asistente.');
+   return;
+ }
+ 
+ addMsg('ai', 'Pensando...');
+ const typingNode = msgs.lastElementChild;
+
+ try {
+   const sysPrompt = `Eres un asistente financiero de la app "Mis Pagos". Hoy es ${iso(today())}.
+Moneda: ${S.s.cur}.
+Deudas actuales: ${JSON.stringify(S.o.map(o=>({id:o.id, name:o.name, amt:o.amt, due:o.due, letras:o.letras}))) }.
+Interpreta la petición y devuelve ÚNICAMENTE un JSON válido:
+{
+  "mensaje": "Respuesta amigable",
+  "acciones": [
+    { "tipo": "add", "name": "Nombre", "amt": 100, "due": "YYYY-MM-DD", "letras": 5, "type": "Préstamo" },
+    { "tipo": "edit", "id": "id_deuda", "amt": 150 },
+    { "tipo": "delete", "id": "id_deuda" },
+    { "tipo": "undo" }
+  ]
+}
+Reglas:
+1. Si menciona deuda vencida, calcula el "due" en el pasado.
+2. Si pide deshacer, usa "undo".
+3. type debe ser: Préstamo, Tarjeta de crédito, Servicio, u Otro.`;
+
+   const res = await fetch('https://api.openai.com/v1/chat/completions', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.s.aiKey },
+     body: JSON.stringify({
+       model: 'gpt-4o-mini',
+       messages: [
+         { role: 'system', content: sysPrompt },
+         { role: 'user', content: text }
+       ],
+       response_format: { type: "json_object" }
+     })
+   });
+   
+   if(!res.ok) throw new Error('Error API');
+   const data = await res.json();
+   const aiRes = JSON.parse(data.choices[0].message.content);
+   
+   typingNode.remove();
+   chatHistory.pop();
+   
+   let changed = false;
+   if(aiRes.acciones && aiRes.acciones.length > 0) {
+     const hasUndo = aiRes.acciones.some(x => x.tipo === 'undo');
+     if(!hasUndo) saveState();
+     
+     for(const act of aiRes.acciones) {
+       if(act.tipo === 'undo') {
+         if(undoStack.length > 0) {
+           S = JSON.parse(undoStack.pop());
+           changed = true;
+         }
+       } else if(act.tipo === 'add') {
+         S.o.push({
+           id: Date.now().toString(36) + Math.random().toString(36).substr(2,5),
+           name: act.name || 'Nueva Deuda',
+           type: act.type || 'Otro',
+           amt: parseFloat(act.amt) || 0,
+           due: act.due || iso(today()),
+           day: D(act.due || iso(today())).getDate(),
+           saved: 0,
+           letras: parseInt(act.letras) || 0
+         });
+         changed = true;
+       } else if(act.tipo === 'edit' && act.id) {
+         const obj = S.o.find(x => x.id === act.id);
+         if(obj) {
+           if(act.name) obj.name = act.name;
+           if(act.amt) obj.amt = parseFloat(act.amt);
+           if(act.due) { obj.due = act.due; obj.day = D(act.due).getDate(); delete obj.commit; }
+           if(act.letras !== undefined) obj.letras = parseInt(act.letras);
+           if(act.type) obj.type = act.type;
+           changed = true;
+         }
+       } else if(act.tipo === 'delete' && act.id) {
+         S.o = S.o.filter(x => x.id !== act.id);
+         changed = true;
+       }
+     }
+     if(changed) { save(); render(); }
+   }
+   
+   addMsg('ai', aiRes.mensaje || 'Hecho.');
+   
+ } catch(e) {
+   typingNode.remove();
+   chatHistory.pop();
+   addMsg('ai', 'Hubo un error de conexión o la API Key es inválida.');
+ }
+}
+
+document.addEventListener('keypress', e => {
+  if(e.key === 'Enter' && e.target.id === 'chatIn') sendChat();
+});
 
 document.addEventListener('click',e=>{
  const b=e.target.closest('[data-act]');if(!b)return;
  const a=b.dataset.act,id=b.dataset.id,o=S.o.find(x=>x.id===id),key=a+id;
  if(a==='pay'||a==='del'){if(arm!==key){arm=key;render();return}}
  arm=null;
+ 
+ if(['apt','aptall','pay','del','saveo','savecfg'].includes(a)) saveState();
+ 
  if(a==='add')return form();
  if(a==='cfg')return cfg();
+ if(a==='chat')return openChat();
+ if(a==='closeChat')return $('#chatDlg').close();
+ if(a==='sendChat')return sendChat();
  if(a==='edit')return form(o);
  if(a==='close')return $('#dlg').close();
  if(a==='apt')apt(o);
@@ -172,7 +321,7 @@ document.addEventListener('click',e=>{
   if(o){if(o.due!==due)delete o.commit;Object.assign(o,v);if(!letras)delete o.letras;}else S.o.push({id:Date.now().toString(36),...v});
   $('#dlg').close()}
  else if(a==='savecfg'){
-  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2))};
+  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2)),aiKey:$('#ck').value.trim()};
   S.o.forEach(x=>delete x.commit);$('#dlg').close()}
  render();
 });
