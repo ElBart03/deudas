@@ -70,7 +70,7 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--mut)}
 <dialog id="chatDlg"></dialog>
 <script>
 const $=s=>document.querySelector(s),K='mispagos.v1';
-const DEF={payday:5,income:0,cur:'S/',ovw:2,aiKey:''};
+const DEF={payday:5,income:0,cur:'S/',ovw:2};
 let S={s:{...DEF},o:[],h:[]},arm=null;
 try{const r=localStorage.getItem(K);if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
 S.s=Object.assign({},DEF,S.s);
@@ -157,14 +157,13 @@ function cfg(){
  <label>Ingreso semanal (opcional, para ver cuánto te queda libre)</label><input id="ci" type="number" inputmode="decimal" min="0" step="any" value="${s.income||''}">
  <label>Moneda</label><input id="cc" value="${esc(s.cur)}" maxlength="4">
  <label>Semanas para ponerte al día en pagos vencidos (menos semanas = menos mora, más monto semanal)</label><input id="cw" type="number" inputmode="numeric" min="1" max="12" value="${s.ovw}">
- <label>API Key de OpenAI (Para Asistente IA)</label><input id="ck" type="password" value="${esc(s.aiKey||'')}">
  <div class="acts"><button class="btn" data-act="close">Cancelar</button><button class="btn p" data-act="savecfg">Guardar</button></div>`;
  $('#dlg').showModal();
 }
 
 let chatHistory = [];
 function openChat(){
- $('#chatDlg').innerHTML=`<div class="t" style="margin-bottom:12px">🤖 Asistente IA</div>
+ $('#chatDlg').innerHTML=`<div class="t" style="margin-bottom:12px">🤖 Asistente IA (Offline)</div>
  <div id="chatMsgs" style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;padding-right:4px"></div>
  <div class="chat-inp-row">
   <input id="chatIn" placeholder="Ej: Agrega 5 letras a MIBANCO..." autocomplete="off">
@@ -173,12 +172,12 @@ function openChat(){
  <div class="acts" style="margin-top:12px"><button class="btn" data-act="closeChat">Cerrar</button></div>`;
  $('#chatDlg').showModal();
  const msgs = $('#chatMsgs');
- if(chatHistory.length === 0) chatHistory.push({r:'ai', t:'¡Hola! Soy tu asistente. Dime qué pagos quieres agregar, editar o si quieres deshacer algo.'});
+ if(chatHistory.length === 0) chatHistory.push({r:'ai', t:'¡Hola! Soy tu asistente inteligente. Dime qué pagos quieres agregar, editar o si quieres deshacer algo. Funciono sin internet.'});
  msgs.innerHTML = chatHistory.map(m => `<div class="chat-msg ${m.r}">${esc(m.t)}</div>`).join('');
  msgs.scrollTop = msgs.scrollHeight;
 }
 
-async function sendChat(){
+function sendChat(){
  const inp = $('#chatIn');
  const text = inp.value.trim();
  if(!text) return;
@@ -192,53 +191,54 @@ async function sendChat(){
  };
  
  addMsg('u', text);
- 
- if(!S.s.aiKey) {
-   addMsg('ai', 'Por favor, configura tu API Key de OpenAI en los Ajustes (⚙️) para usar el asistente.');
-   return;
- }
- 
  addMsg('ai', 'Pensando...');
  const typingNode = msgs.lastElementChild;
 
- try {
-   const sysPrompt = `Eres un asistente financiero de la app "Mis Pagos". Hoy es ${iso(today())}.
-Moneda: ${S.s.cur}.
-Deudas actuales: ${JSON.stringify(S.o.map(o=>({id:o.id, name:o.name, amt:o.amt, due:o.due, letras:o.letras}))) }.
-Interpreta la petición y devuelve ÚNICAMENTE un JSON válido:
-{
-  "mensaje": "Respuesta amigable",
-  "acciones": [
-    { "tipo": "add", "name": "Nombre", "amt": 100, "due": "YYYY-MM-DD", "letras": 5, "type": "Préstamo" },
-    { "tipo": "edit", "id": "id_deuda", "amt": 150 },
-    { "tipo": "delete", "id": "id_deuda" },
-    { "tipo": "undo" }
-  ]
-}
-Reglas:
-1. Si menciona deuda vencida, calcula el "due" en el pasado.
-2. Si pide deshacer, usa "undo".
-3. type debe ser: Préstamo, Tarjeta de crédito, Servicio, u Otro.`;
-
-   const res = await fetch('https://api.openai.com/v1/chat/completions', {
-     method: 'POST',
-     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.s.aiKey },
-     body: JSON.stringify({
-       model: 'gpt-4o-mini',
-       messages: [
-         { role: 'system', content: sysPrompt },
-         { role: 'user', content: text }
-       ],
-       response_format: { type: "json_object" }
-     })
-   });
-   
-   if(!res.ok) throw new Error('Error API');
-   const data = await res.json();
-   const aiRes = JSON.parse(data.choices[0].message.content);
-   
+ setTimeout(() => {
    typingNode.remove();
    chatHistory.pop();
+   
+   let t = text.toLowerCase().replace(/[.,]/g, '');
+   let aiRes = { mensaje: "No logré entender los detalles. Intenta decir: 'Agrega a MIBANCO 100 soles a 5 letras' o 'Deshacer'.", acciones: [] };
+   
+   if (/(deshacer|deshaz|equivoqu|atrás|regresa|error)/.test(t)) {
+     aiRes = { mensaje: "He deshecho la última acción.", acciones: [{ tipo: "undo" }] };
+   } else {
+     let nameMatch = t.match(/(?:a|con|deuda de|pago a|para)\s+([a-z0-9]+)/i);
+     let name = nameMatch ? nameMatch[1].toUpperCase() : null;
+     
+     let delMatch = t.match(/(elimina|borra|quita|cancela)/);
+     if (delMatch && name) {
+       let found = S.o.find(x => x.name.toUpperCase().includes(name));
+       if (found) aiRes = { mensaje: `Eliminé la deuda de ${found.name}.`, acciones: [{ tipo: "delete", id: found.id }] };
+     } else {
+       let amtMatch = t.match(/(?:de|monto|por)?\s*(?:s\/|S\/|\$)?\s*(\d+(?:\.\d+)?)\s*(?:soles|dolares|usd)?/);
+       let amt = amtMatch ? parseFloat(amtMatch[1]) : null;
+       
+       let numMap = {un:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6,siete:7,ocho:8,nueve:9,diez:10};
+       let letrasMatch = t.match(/(un|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d+)\s*(letra|cuota|mes)/);
+       let letras = letrasMatch ? (parseInt(letrasMatch[1]) || numMap[letrasMatch[1]] || 0) : null;
+       
+       let isVencida = /(vencid[oa]|atrasad[oa]|pasad[oa]|ya venci)/.test(t);
+       let due = isVencida ? iso(add(today(), -15)) : iso(today());
+       
+       if (name || amt !== null || letras !== null) {
+         let existing = name ? S.o.find(x => x.name.toUpperCase().includes(name)) : null;
+         if (existing) {
+           let act = { tipo: "edit", id: existing.id };
+           let msg = `Actualicé ${existing.name}:`;
+           if (amt !== null) { act.amt = amt; msg += ` monto a ${amt}`; }
+           if (letras !== null) { act.letras = letras; msg += ` letras a ${letras}`; }
+           if (isVencida) { act.due = due; msg += ` (marcada como vencida)`; }
+           aiRes = { mensaje: msg+".", acciones: [act] };
+         } else {
+           let finalName = name || 'Nueva Deuda';
+           let finalAmt = amt || 0;
+           aiRes = { mensaje: `Agregué ${finalName} por ${m(finalAmt)} con ${letras||0} letras${isVencida?' (vencida)':' (vence hoy)'}.`, acciones: [{ tipo: "add", name: finalName, amt: finalAmt, due: due, letras: letras || 0, type: "Otro" }] };
+         }
+       }
+     }
+   }
    
    let changed = false;
    if(aiRes.acciones && aiRes.acciones.length > 0) {
@@ -282,12 +282,7 @@ Reglas:
    }
    
    addMsg('ai', aiRes.mensaje || 'Hecho.');
-   
- } catch(e) {
-   typingNode.remove();
-   chatHistory.pop();
-   addMsg('ai', 'Hubo un error de conexión o la API Key es inválida.');
- }
+ }, 600);
 }
 
 document.addEventListener('keypress', e => {
@@ -321,7 +316,7 @@ document.addEventListener('click',e=>{
   if(o){if(o.due!==due)delete o.commit;Object.assign(o,v);if(!letras)delete o.letras;}else S.o.push({id:Date.now().toString(36),...v});
   $('#dlg').close()}
  else if(a==='savecfg'){
-  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2)),aiKey:$('#ck').value.trim()};
+  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2))};
   S.o.forEach(x=>delete x.commit);$('#dlg').close()}
  render();
 });
