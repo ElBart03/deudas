@@ -70,10 +70,21 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--mut)}
 <dialog id="chatDlg"></dialog>
 <script>
 const $=s=>document.querySelector(s),K='mispagos.v1';
-const DEF={payday:5,income:0,cur:'S/',ovw:2};
+const DEF={payday:5,income:550,fixed:475,cur:'S/',ovw:2};
 let S={s:{...DEF},o:[],h:[]},arm=null;
 try{const r=localStorage.getItem(K);if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
 S.s=Object.assign({},DEF,S.s);
+
+if(S.o.length===0){
+  S.o=[
+   {id:'w1',name:'Yape',type:'Préstamo',amt:59.51,due:'2026-10-15',day:15,saved:0,letras:5,cancelAmt:266.79},
+   {id:'w2',name:'Mibanco (Cuota 2 Atrasada)',type:'Préstamo',amt:127.85,due:'2026-09-26',day:26,saved:0,letras:1},
+   {id:'w3',name:'Mibanco (Cuota 3)',type:'Préstamo',amt:172.80,due:'2026-10-26',day:26,saved:0,letras:4},
+   {id:'w4',name:'Powerpay - Infanti',type:'Otro',amt:163.10,due:'2026-10-15',day:15,saved:0,letras:1},
+   {id:'w5',name:'BBVA Bfree',type:'Tarjeta de crédito',amt:96.45,due:'2026-11-05',day:5,saved:0,cancelAmt:1036.34},
+   {id:'w6',name:'Multa de Tránsito',type:'Otro',amt:44.00,due:'2026-12-01',day:1,saved:0}
+  ];
+}
 
 let undoStack = [];
 const saveState = () => { undoStack.push(JSON.stringify(S)); if(undoStack.length>20) undoStack.shift(); };
@@ -114,12 +125,12 @@ function render(){
  const t=today(),lp=lastPay(t),nx=diff(lp,t)===0?t:add(lp,7);
  const P=S.o.map(o=>({o,p:plan(o,t,lp)})).sort((a,b)=>(b.p.over-a.p.over)||(a.p.due-b.p.due));
  save();
- const tot=P.reduce((s,x)=>s+x.p.share,0),got=P.reduce((s,x)=>s+Math.min(x.p.prior,x.p.share),0),inc=+S.s.income;
+ const tot=P.reduce((s,x)=>s+x.p.share,0),got=P.reduce((s,x)=>s+Math.min(x.p.prior,x.p.share),0),inc=+S.s.income,fix=+S.s.fixed||0,net=inc-fix;
  $('#sub').textContent='Cobras los '+DAYS[S.s.payday].toLowerCase()+' · próximo: '+fd(nx);
  $('#hero').innerHTML=P.length?`<div class="lbl">Separa de tu cobro del ${fd(lp)}</div><div class="big">${m(tot)}</div>
   <div class="bar"><i style="width:${tot?Math.min(100,got/tot*100):0}%"></i></div>
   <div class="row"><span>Apartado ${m(got)}</span><span>Falta ${m(tot-got)}</span></div>
-  ${inc?`<div class="row" style="margin-top:6px"><span>Ingreso semanal ${m(inc)}</span><span class="${inc-tot<0?'neg':''}">Libre ${m(inc-tot)}</span></div>`:''}
+  ${inc?`<div class="row" style="margin-top:6px"><span>Ingreso ${m(inc)} - Fijos ${m(fix)}</span><span class="${net-tot<0?'neg':''}">Libre ${m(net-tot)}</span></div>`:''}
   ${tot-got>0?'<div class="acts"><button class="btn" data-act="aptall">✓ Ya aparté todo lo de esta semana</button></div>':''}`
   :`<div class="big" style="font-size:22px">Agrega tu primer pago</div><div class="lbl">Toca + y registra préstamos, tarjetas u otros gastos con su fecha de vencimiento.</div>`;
  $('#list').innerHTML=P.map(({o,p})=>{const[c,txt]=chip(p,t),ready=o.saved>=o.amt,pk='pay'+o.id,dk='del'+o.id;
@@ -129,7 +140,7 @@ function render(){
   return`<div class="card"><div class="row"><span class="t">${ICON[o.type]||'🧾'} ${esc(o.name)}</span><div style="display:flex;align-items:center">${ltxt}<span class="chip ${c}">${txt}</span></div></div>
   <div class="row" style="margin-top:6px"><span class="amt">${m(o.amt)}</span><span class="mut">Falta ${m(p.rem)}</span></div>
   <div class="pg"><i style="width:${Math.min(100,o.saved/o.amt*100)}%"></i></div>
-  <div class="plan">${info}<div class="mut">${sub}${o.saved?' · Apartado '+m(o.saved):''}</div></div>
+  <div class="plan">${info}<div class="mut">${sub}${o.saved?' · Apartado '+m(o.saved):''}${o.cancelAmt?'<br>💰 Cancelación Total: '+m(o.cancelAmt):''}</div></div>
   <div class="acts">${!ready&&p.share-p.prior>0?`<button class="btn p" data-act="apt" data-id="${o.id}">Apartar</button>`:''}
   <button class="btn p" data-act="pay" data-id="${o.id}">${arm===pk?'¿Confirmar?':'Pagado'}</button>
   <button class="btn" data-act="edit" data-id="${o.id}">Editar</button>
@@ -139,12 +150,13 @@ function render(){
 }
 
 function form(o){
- const e=o||{name:'',type:'Préstamo',amt:'',due:iso(today()),saved:0,letras:''};
+ const e=o||{name:'',type:'Préstamo',amt:'',due:iso(today()),saved:0,letras:'',cancelAmt:''};
  $('#dlg').innerHTML=`<div class="t">${o?'Editar pago':'Nuevo pago'}</div>
  <label>Nombre</label><input id="fn" value="${esc(e.name)}" placeholder="Ej. Tarjeta BBVA">
  <label>Tipo</label><select id="ft">${Object.keys(ICON).map(k=>`<option${k===e.type?' selected':''}>${k}</option>`).join('')}</select>
  <label>Monto a pagar este mes (${esc(S.s.cur)})</label><input id="fa" type="number" inputmode="decimal" min="0" step="any" value="${e.amt}">
  <label>Letras/Cuotas restantes (opcional)</label><input id="fl" type="number" inputmode="numeric" min="1" step="1" value="${e.letras||''}" placeholder="Ej. 4">
+ <label>Monto para cancelación total (opcional)</label><input id="fc" type="number" inputmode="decimal" min="0" step="any" value="${e.cancelAmt||''}" placeholder="Para simular liquidación">
  <label>Fecha de vencimiento (si ya pasó, queda como vencido)</label><input id="fd" type="date" value="${e.due}">
  <label>Ya apartado para este pago (${esc(S.s.cur)})</label><input id="fs" type="number" inputmode="decimal" min="0" step="any" value="${e.saved}">
  <div class="acts"><button class="btn" data-act="close">Cancelar</button><button class="btn p" data-act="saveo" data-id="${o?o.id:''}">Guardar</button></div>`;
@@ -154,9 +166,10 @@ function cfg(){
  const s=S.s;
  $('#dlg').innerHTML=`<div class="t">Ajustes</div>
  <label>Día de cobro</label><select id="cp">${DAYS.map((d,i)=>`<option value="${i}"${i==s.payday?' selected':''}>${d}</option>`).join('')}</select>
- <label>Ingreso semanal (opcional, para ver cuánto te queda libre)</label><input id="ci" type="number" inputmode="decimal" min="0" step="any" value="${s.income||''}">
+ <label>Ingreso semanal</label><input id="ci" type="number" inputmode="decimal" min="0" step="any" value="${s.income||''}">
+ <label>Gastos fijos intocables (Ej. Comida S/400 + Hija S/75)</label><input id="cf" type="number" inputmode="decimal" min="0" step="any" value="${s.fixed||''}">
  <label>Moneda</label><input id="cc" value="${esc(s.cur)}" maxlength="4">
- <label>Semanas para ponerte al día en pagos vencidos (menos semanas = menos mora, más monto semanal)</label><input id="cw" type="number" inputmode="numeric" min="1" max="12" value="${s.ovw}">
+ <label>Semanas para ponerte al día en pagos vencidos</label><input id="cw" type="number" inputmode="numeric" min="1" max="12" value="${s.ovw}">
  <div class="acts"><button class="btn" data-act="close">Cancelar</button><button class="btn p" data-act="savecfg">Guardar</button></div>`;
  $('#dlg').showModal();
 }
@@ -309,14 +322,15 @@ document.addEventListener('click',e=>{
  else if(a==='pay')pay(o);
  else if(a==='del')S.o=S.o.filter(x=>x.id!==id);
  else if(a==='saveo'){
-  const name=$('#fn').value.trim(),amt=parseFloat($('#fa').value),due=$('#fd').value,letras=parseInt($('#fl').value)||0;
+  const name=$('#fn').value.trim(),amt=parseFloat($('#fa').value),due=$('#fd').value,letras=parseInt($('#fl').value)||0,cancelAmt=parseFloat($('#fc').value)||0;
   if(!name||!(amt>0)||!due){alert('Completa nombre, monto y fecha.');return}
   const v={name,type:$('#ft').value,amt,due,day:D(due).getDate(),saved:Math.max(0,parseFloat($('#fs').value)||0)};
   if(letras>0) v.letras=letras;
-  if(o){if(o.due!==due)delete o.commit;Object.assign(o,v);if(!letras)delete o.letras;}else S.o.push({id:Date.now().toString(36),...v});
+  if(cancelAmt>0) v.cancelAmt=cancelAmt;
+  if(o){if(o.due!==due)delete o.commit;Object.assign(o,v);if(!letras)delete o.letras;if(!cancelAmt)delete o.cancelAmt;}else S.o.push({id:Date.now().toString(36),...v});
   $('#dlg').close()}
  else if(a==='savecfg'){
-  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2))};
+  S.s={payday:+$('#cp').value,income:parseFloat($('#ci').value)||0,fixed:parseFloat($('#cf').value)||0,cur:$('#cc').value.trim()||'S/',ovw:Math.min(12,Math.max(1,parseInt($('#cw').value)||2))};
   S.o.forEach(x=>delete x.commit);$('#dlg').close()}
  render();
 });
